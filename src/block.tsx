@@ -89,7 +89,7 @@ export const Block: React.FC<BlockProps> = ({
   cameraPosition = [10, 10, 10]
 }) => {
   return (
-    <div className="relative w-screen h-screen">
+    <div className="relative w-full h-full">
       <Canvas
         camera={{ position: cameraPosition, fov: 90 }}
         gl={{ antialias: true, alpha: true }}

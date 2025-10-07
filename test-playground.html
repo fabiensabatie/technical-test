@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <title>Block Test Playground</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        }
+        .main-container {
+            overflow:hidden;
+            display: flex;
+            flex-direction: row;
+            height: 100vh;
+            width: 100vw;
+        }
+        .editor-panel {
+            width: 400px;
+            border-right: 1px solid #e5e7eb;
+            display: flex;
+            flex-direction: column;
+            background: white;
+        }
+        .preview-panel {
+            width: calc(100vw - 400px);
+            background: #f9fafb;
+            position: relative;
+            overflow:hidden;
+            max-width:100% !important;
+        }
+        .header {
+            padding: 20px;
+            border-bottom: 1px solid #e5e7eb;
+            background: #fafafa;
+        }
+        .editor-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+        textarea {
+            flex: 1;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            padding: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            resize: none;
+            min-height: 300px;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #8b5cf6;
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+        }
+        .error-message {
+            margin-top: 12px;
+            padding: 12px;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 6px;
+            color: #dc2626;
+            font-size: 12px;
+            font-family: 'Courier New', monospace;
+        }
+        .success-message {
+            margin-top: 12px;
+            padding: 12px;
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            border-radius: 6px;
+            color: #16a34a;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .block-container {
+            width: 100%;
+            height: 100%;
+            overflow:hidden;
+        }
+        .button {
+            padding: 8px 16px;
+            background: #8b5cf6;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        .button:hover {
+            background: #7c3aed;
+        }
+        .button:disabled {
+            background: #d1d5db;
+            cursor: not-allowed;
+        }
+        .button-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .schema-section {
+            padding: 20px;
+            border-bottom: 1px solid #e5e7eb;
+            background: #eff6ff;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .schema-prop {
+            margin-bottom: 12px;
+            font-size: 12px;
+        }
+        .schema-prop-name {
+            font-family: 'Courier New', monospace;
+            background: #dbeafe;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #1e40af;
+            font-weight: 600;
+        }
+        .schema-prop-type {
+            color: #2563eb;
+            margin-left: 8px;
+        }
+        .schema-prop-required {
+            color: #dc2626;
+            font-weight: bold;
+            margin-left: 4px;
+        }
+        .schema-prop-desc {
+            color: #6b7280;
+            margin-top: 4px;
+            margin-left: 4px;
+        }
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            font-size: 16px;
+            color: #6b7280;
+        }
+        .spinner {
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #8b5cf6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-right: 12px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <!-- Editor Panel -->
+        <div class="editor-panel">
+            <div class="header">
+                <h1 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 600; color: #111827;">
+                    Block Test Playground
+                </h1>
+                <p style="margin: 0; font-size: 14px; color: #6b7280;">
+                    Test your webpack federation module with custom props
+                </p>
+            </div>
+            
+
+
+            <!-- Props Editor Section -->
+            <div class="editor-section">
+                <h3 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #111827;">
+                    Props Editor (JSON)
+                </h3>
+                <textarea id="props-editor" spellcheck="false">{
+  "autoRotate": true,
+  "playAnimations": true,
+  "cameraPosition": [10, 10, 10]
+}</textarea>
+                <div class="button-group">
+                    <button class="button" id="apply-props" onclick="applyProps()">
+                        Apply Props
+                    </button>
+                    <button class="button" style="background: #6b7280;" onclick="resetProps()">
+                        Reset
+                    </button>
+                </div>
+                <div id="message-container"></div>
+            </div>
+        </div>
+
+        <!-- Preview Panel -->
+        <div class="preview-panel">
+            <div id="block-preview" class="block-container">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <span>Loading module...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentMountAPI = null;
+        const defaultProps = {
+            autoRotate: true,
+            playAnimations: true,
+            cameraPosition: [10, 10, 10]
+        };
+
+        // Load the module federation remote
+        async function loadModule() {
+            try {
+                // Load the remote entry
+                const script = document.createElement('script');
+                script.src = '/dist/remoteEntry.js';
+                script.type = 'text/javascript';
+                
+                script.onerror = () => {
+                    showError('Failed to load module. Make sure you ran "npm run build" first.');
+                };
+                
+                script.onload = async () => {
+                    try {
+                        // Check if the global container exists
+                        if (!window.threescene) {
+                            showError('Module container "threescene" not found. Check webpack config.');
+                            return;
+                        }
+                        
+                        // Initialize the container with an empty share scope
+                        // This is for standalone testing without a host application
+                        await window.threescene.init({});
+                        
+                        // Get the module
+                        const factory = await window.threescene.get('./Block');
+                        const Module = factory();
+                        
+                        // Mount the block
+                        const container = document.getElementById('block-preview');
+                        container.innerHTML = '';
+                        
+                        // Use the mount function from the module
+                        if (Module.mount) {
+                            currentMountAPI = Module.mount(container, defaultProps);
+                            showSuccess('Module loaded successfully!');
+                        } else if (Module.default && Module.default.mount) {
+                            currentMountAPI = Module.default.mount(container, defaultProps);
+                            showSuccess('Module loaded successfully!');
+                        } else if (Module.default) {
+                            showError('Module loaded but no mount function found. Check App.tsx exports.');
+                            console.log('Module exports:', Object.keys(Module));
+                        } else {
+                            showError('Module does not export a mount function');
+                            console.log('Module:', Module);
+                        }
+                    } catch (error) {
+                        console.error('Module loading error:', error);
+                        showError(`Module initialization error: ${error.message}`);
+                    }
+                };
+                
+                document.head.appendChild(script);
+            } catch (error) {
+                console.error('Script loading error:', error);
+                showError(`Failed to load remote module: ${error.message}`);
+            }
+        }
+
+        function applyProps() {
+            const editor = document.getElementById('props-editor');
+            const messageContainer = document.getElementById('message-container');
+            
+            try {
+                const props = JSON.parse(editor.value);
+                
+                if (currentMountAPI && currentMountAPI.updateProps) {
+                    currentMountAPI.updateProps(props);
+                    showSuccess('Props applied successfully!');
+                } else {
+                    showError('Module not loaded or updateProps not available');
+                }
+            } catch (error) {
+                showError(`JSON Error: ${error.message}`);
+            }
+        }
+
+        function resetProps() {
+            const editor = document.getElementById('props-editor');
+            editor.value = JSON.stringify(defaultProps, null, 2);
+            applyProps();
+        }
+
+        function showError(message) {
+            const messageContainer = document.getElementById('message-container');
+            messageContainer.innerHTML = `
+                <div class="error-message">
+                    ⚠️ ${message}
+                </div>
+            `;
+        }
+
+        function showSuccess(message) {
+            const messageContainer = document.getElementById('message-container');
+            messageContainer.innerHTML = `
+                <div class="success-message">
+                    <span>✓</span>
+                    <span>${message}</span>
+                </div>
+            `;
+        }
+
+        // Load the module on page load
+        window.addEventListener('load', () => {
+            loadModule();
+        });
+
+        // Allow Enter key to apply props (with Ctrl/Cmd modifier)
+        document.getElementById('props-editor').addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                applyProps();
+            }
+        });
+    </script>
+</body>
+</html>
+

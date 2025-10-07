@@ -2,6 +2,7 @@
   "scripts": {
     "dev": "vite",
     "build": "webpack --config webpack.config.js --mode production",
+    "test": "node test-server.js",
     "preview": "vite preview",
     "build:dev": "vite build"
   },
