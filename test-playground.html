@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,13 +12,15 @@
             padding: 0;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
         }
+
         .main-container {
-            overflow:hidden;
+            overflow: hidden;
             display: flex;
             flex-direction: row;
             height: 100vh;
             width: 100vw;
         }
+
         .editor-panel {
             width: 400px;
             border-right: 1px solid #e5e7eb;
@@ -25,24 +28,28 @@
             flex-direction: column;
             background: white;
         }
+
         .preview-panel {
             width: calc(100vw - 400px);
             background: #f9fafb;
             position: relative;
-            overflow:hidden;
-            max-width:100% !important;
+            overflow: hidden;
+            max-width: 100% !important;
         }
+
         .header {
             padding: 20px;
             border-bottom: 1px solid #e5e7eb;
             background: #fafafa;
         }
+
         .editor-section {
             flex: 1;
             display: flex;
             flex-direction: column;
             padding: 20px;
         }
+
         textarea {
             flex: 1;
             font-family: 'Courier New', monospace;
@@ -53,11 +60,13 @@
             resize: none;
             min-height: 300px;
         }
+
         textarea:focus {
             outline: none;
             border-color: #8b5cf6;
             box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
         }
+
         .error-message {
             margin-top: 12px;
             padding: 12px;
@@ -68,6 +77,7 @@
             font-size: 12px;
             font-family: 'Courier New', monospace;
         }
+
         .success-message {
             margin-top: 12px;
             padding: 12px;
@@ -80,11 +90,13 @@
             align-items: center;
             gap: 8px;
         }
+
         .block-container {
             width: 100%;
             height: 100%;
-            overflow:hidden;
+            overflow: hidden;
         }
+
         .button {
             padding: 8px 16px;
             background: #8b5cf6;
@@ -96,18 +108,22 @@
             font-weight: 500;
             transition: background 0.2s;
         }
+
         .button:hover {
             background: #7c3aed;
         }
+
         .button:disabled {
             background: #d1d5db;
             cursor: not-allowed;
         }
+
         .button-group {
             display: flex;
             gap: 8px;
             margin-top: 12px;
         }
+
         .schema-section {
             padding: 20px;
             border-bottom: 1px solid #e5e7eb;
@@ -115,10 +131,12 @@
             max-height: 300px;
             overflow-y: auto;
         }
+
         .schema-prop {
             margin-bottom: 12px;
             font-size: 12px;
         }
+
         .schema-prop-name {
             font-family: 'Courier New', monospace;
             background: #dbeafe;
@@ -127,20 +145,24 @@
             color: #1e40af;
             font-weight: 600;
         }
+
         .schema-prop-type {
             color: #2563eb;
             margin-left: 8px;
         }
+
         .schema-prop-required {
             color: #dc2626;
             font-weight: bold;
             margin-left: 4px;
         }
+
         .schema-prop-desc {
             color: #6b7280;
             margin-top: 4px;
             margin-left: 4px;
         }
+
         .loading {
             display: flex;
             align-items: center;
@@ -149,6 +171,7 @@
             font-size: 16px;
             color: #6b7280;
         }
+
         .spinner {
             border: 3px solid #f3f4f6;
             border-top: 3px solid #8b5cf6;
@@ -158,12 +181,19 @@
             animation: spin 1s linear infinite;
             margin-right: 12px;
         }
+
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
     </style>
 </head>
+
 <body>
     <div class="main-container">
         <!-- Editor Panel -->
@@ -176,7 +206,7 @@
                     Test your webpack federation module with custom props
                 </p>
             </div>
-            
+
 
 
             <!-- Props Editor Section -->
@@ -185,9 +215,15 @@
                     Props Editor (JSON)
                 </h3>
                 <textarea id="props-editor" spellcheck="false">{
-  "autoRotate": true,
-  "playAnimations": true,
-  "cameraPosition": [10, 10, 10]
+  "canvasWidth": 600,
+  "canvasHeight": 400,
+  "brushSize": 3,
+  "brushColor": "#000000",
+  "backgroundColor": "#ffffff",
+  "enableEraser": true,
+  "maxStrokes": 500,
+  "showCursors": true,
+  "documentId": "demo-canvas"
 }</textarea>
                 <div class="button-group">
                     <button class="button" id="apply-props" onclick="applyProps()">
@@ -215,9 +251,15 @@
     <script>
         let currentMountAPI = null;
         const defaultProps = {
-            autoRotate: true,
-            playAnimations: true,
-            cameraPosition: [10, 10, 10]
+            canvasWidth: 600,
+            canvasHeight: 400,
+            brushSize: 3,
+            brushColor: "#000000",
+            backgroundColor: "#ffffff",
+            enableEraser: true,
+            maxStrokes: 500,
+            showCursors: true,
+            documentId: "demo-canvas"
         };
 
         // Load the module federation remote
@@ -227,11 +269,11 @@
                 const script = document.createElement('script');
                 script.src = '/dist/remoteEntry.js';
                 script.type = 'text/javascript';
-                
+
                 script.onerror = () => {
                     showError('Failed to load module. Make sure you ran "npm run build" first.');
                 };
-                
+
                 script.onload = async () => {
                     try {
                         // Check if the global container exists
@@ -239,19 +281,19 @@
                             showError('Module container "threescene" not found. Check webpack config.');
                             return;
                         }
-                        
+
                         // Initialize the container with an empty share scope
                         // This is for standalone testing without a host application
                         await window.threescene.init({});
-                        
+
                         // Get the module
                         const factory = await window.threescene.get('./Block');
                         const Module = factory();
-                        
+
                         // Mount the block
                         const container = document.getElementById('block-preview');
                         container.innerHTML = '';
-                        
+
                         // Use the mount function from the module
                         if (Module.mount) {
                             currentMountAPI = Module.mount(container, defaultProps);
@@ -271,7 +313,7 @@
                         showError(`Module initialization error: ${error.message}`);
                     }
                 };
-                
+
                 document.head.appendChild(script);
             } catch (error) {
                 console.error('Script loading error:', error);
@@ -282,10 +324,10 @@
         function applyProps() {
             const editor = document.getElementById('props-editor');
             const messageContainer = document.getElementById('message-container');
-            
+
             try {
                 const props = JSON.parse(editor.value);
-                
+
                 if (currentMountAPI && currentMountAPI.updateProps) {
                     currentMountAPI.updateProps(props);
                     showSuccess('Props applied successfully!');
@@ -335,5 +377,5 @@
         });
     </script>
 </body>
-</html>
 
+</html>
