@@ -1,863 +1,945 @@
 import React, {
-  useRef,
-  useEffect,
   useState,
+  useEffect,
   useCallback,
   useMemo,
-  memo,
+  useRef,
 } from "react";
-import { useCollabSpace } from "@mexty/realtime";
+import { useCollabSpace, getUserId } from "@mexty/realtime";
 
-// ===== Type Definitions =====
-interface Point {
-  x: number;
-  y: number;
-}
-
-interface DrawingStroke {
-  id: string;
-  userId: string;
-  points: Point[];
-  color: string;
-  size: number;
-  timestamp: number;
-}
-
-interface UserCursor {
-  userId: string;
-  x: number;
-  y: number;
-  color: string;
-  timestamp: number;
-}
-
-interface CollaborativeState {
-  strokes: DrawingStroke[];
-  cursors: Record<string, UserCursor>;
-  canvasData?: string;
-}
-
+// Types and Interfaces
 interface BlockProps {
-  canvasWidth?: number;
-  canvasHeight?: number;
-  brushSize?: number;
-  brushColor?: string;
-  backgroundColor?: string;
-  enableEraser?: boolean;
-  maxStrokes?: number;
-  showCursors?: boolean;
-  documentId?: string;
+  playerOneColor?: string;
+  playerTwoColor?: string;
+  boardTheme?: "classic" | "modern" | "neon";
+  roomId?: string;
+  showMoveHistory?: boolean;
+  onVisualSettingsChange?: (settings: {
+    playerOneColor: string;
+    playerTwoColor: string;
+    boardTheme: string;
+  }) => void;
 }
 
-interface ToolbarProps {
-  currentTool: "brush" | "eraser";
-  setCurrentTool: (tool: "brush" | "eraser") => void;
-  enableEraser: boolean;
-  currentColor: string;
-  setCurrentColor: (color: string) => void;
-  currentSize: number;
-  setCurrentSize: (size: number) => void;
-  clearCanvas: () => void;
-  isConnected: boolean;
-  strokeCount: number;
-  maxStrokes: number;
-  activeUsers: number;
+type PieceType = "normal" | "king";
+type Player = "player1" | "player2";
+
+interface Piece {
+  id: string;
+  player: Player;
+  type: PieceType;
+  row: number;
+  col: number;
 }
 
-interface UserCursorProps {
-  cursor: UserCursor;
-  userId: string;
+interface Move {
+  row: number;
+  col: number;
+  isCapture?: boolean;
+  capturedPiece?: Piece;
 }
 
-// ===== Constants =====
-const BRUSH_COLORS = [
-  "#000000", // Black
-  "#ff0000", // Red
-  "#00ff00", // Green
-  "#0000ff", // Blue
-  "#ffff00", // Yellow
-  "#ff00ff", // Magenta
-  "#00ffff", // Cyan
-  "#ff8000", // Orange
-  "#8000ff", // Purple
-  "#ff0080", // Pink
-] as const;
+interface GameState {
+  board: (Piece | null)[][];
+  currentPlayer: Player;
+  selectedPiece: Piece | null;
+  validMoves: Move[];
+  capturedPieces: Piece[];
+  winner: Player | null;
+  moveHistory: string[];
+}
 
-const RENDERING_CONFIG = {
-  TARGET_FPS: 60,
-  FRAME_TIME_MS: 16.67, // 1000ms / 60fps
-  CURSOR_UPDATE_INTERVAL_DRAWING: 33, // 30fps when drawing
-  CURSOR_UPDATE_INTERVAL_IDLE: 100, // 10fps when idle
-  CURSOR_TIMEOUT_MS: 5000,
-  STROKE_PRUNING_PERCENTAGE: 0.1,
+interface MultiplayerState {
+  gameState: GameState;
+  players: {
+    player1?: string;
+    player2?: string;
+  };
+  spectators: string[];
+  visualSettings: {
+    playerOneColor: string;
+    playerTwoColor: string;
+    boardTheme: string;
+  };
+}
+
+interface ThemeStyles {
+  lightSquare: string;
+  darkSquare: string;
+  boardBorder: string;
+  selectedSquare: string;
+  validMove: string;
+}
+
+// Constants
+const BOARD_SIZE = 8;
+const PLAYER_LABELS = {
+  player1: "Player 1",
+  player2: "Player 2",
 } as const;
 
-// ===== Utility Functions =====
-const generateStrokeId = (userId: string): string =>
-  `${userId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+// Game Logic Utilities
+const initializeBoard = (
+  boardSize: number = BOARD_SIZE
+): (Piece | null)[][] => {
+  const board: (Piece | null)[][] = Array(boardSize)
+    .fill(null)
+    .map(() => Array(boardSize).fill(null));
 
-const calculateDistance = (p1: Point, p2: Point): number =>
-  Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+  // Place pieces for both players
+  const placePieces = (startRow: number, endRow: number, player: Player) => {
+    for (let row = startRow; row < endRow; row++) {
+      for (let col = 0; col < boardSize; col++) {
+        if ((row + col) % 2 === 1) {
+          board[row][col] = {
+            id: `${player}-${row}-${col}`,
+            player,
+            type: "normal",
+            row,
+            col,
+          };
+        }
+      }
+    }
+  };
 
-const getMinDrawDistance = (brushSize: number): number =>
-  Math.max(1, brushSize * 0.3);
+  placePieces(0, 3, "player1"); // Top rows
+  placePieces(boardSize - 3, boardSize, "player2"); // Bottom rows
 
-// ===== Components =====
+  return board;
+};
 
-// Optimized cursor component
-const UserCursor = memo<UserCursorProps>(({ cursor, userId }) => (
+const getValidMoves = (piece: Piece, board: (Piece | null)[][]): Move[] => {
+  const moves: Move[] = [];
+  const { row, col, player, type } = piece;
+  const boardSize = board.length;
+
+  const directions =
+    type === "king"
+      ? [
+          [-1, -1],
+          [-1, 1],
+          [1, -1],
+          [1, 1],
+        ] // Kings move in all directions
+      : player === "player1"
+      ? [
+          [1, -1],
+          [1, 1],
+        ] // Player 1 moves down
+      : [
+          [-1, -1],
+          [-1, 1],
+        ]; // Player 2 moves up
+
+  for (const [dRow, dCol] of directions) {
+    const newRow = row + dRow;
+    const newCol = col + dCol;
+
+    if (
+      newRow < 0 ||
+      newRow >= boardSize ||
+      newCol < 0 ||
+      newCol >= boardSize
+    ) {
+      continue;
+    }
+
+    const targetSquare = board[newRow][newCol];
+
+    if (!targetSquare) {
+      moves.push({ row: newRow, col: newCol });
+    } else if (targetSquare.player !== player) {
+      // Check for capture possibility
+      const captureRow = newRow + dRow;
+      const captureCol = newCol + dCol;
+
+      if (
+        captureRow >= 0 &&
+        captureRow < boardSize &&
+        captureCol >= 0 &&
+        captureCol < boardSize &&
+        !board[captureRow][captureCol]
+      ) {
+        moves.push({
+          row: captureRow,
+          col: captureCol,
+          isCapture: true,
+          capturedPiece: targetSquare,
+        });
+      }
+    }
+  }
+
+  return moves;
+};
+
+const shouldBecomeKing = (piece: Piece, boardSize: number): boolean => {
+  return (
+    (piece.player === "player1" && piece.row === boardSize - 1) ||
+    (piece.player === "player2" && piece.row === 0)
+  );
+};
+
+const checkWinner = (
+  board: (Piece | null)[][],
+  currentPlayer: Player
+): Player | null => {
+  const player1Pieces = board
+    .flat()
+    .filter((piece) => piece?.player === "player1");
+  const player2Pieces = board
+    .flat()
+    .filter((piece) => piece?.player === "player2");
+
+  if (player1Pieces.length === 0) return "player2";
+  if (player2Pieces.length === 0) return "player1";
+
+  // Check if current player has valid moves
+  const currentPlayerPieces = board
+    .flat()
+    .filter((piece) => piece?.player === currentPlayer);
+  const hasValidMoves = currentPlayerPieces.some(
+    (piece) => piece && getValidMoves(piece, board).length > 0
+  );
+
+  return hasValidMoves
+    ? null
+    : currentPlayer === "player1"
+    ? "player2"
+    : "player1";
+};
+
+const createMoveDescription = (
+  piece: Piece,
+  targetRow: number,
+  targetCol: number,
+  isCapture: boolean
+): string => {
+  const fromSquare = `${String.fromCharCode(65 + piece.col)}${piece.row + 1}`;
+  const toSquare = `${String.fromCharCode(65 + targetCol)}${targetRow + 1}`;
+  return `${piece.player} ${piece.type} ${fromSquare} to ${toSquare}${
+    isCapture ? " (capture)" : ""
+  }`;
+};
+
+// Theme utilities
+const getThemeStyles = (theme: BlockProps["boardTheme"]): ThemeStyles => {
+  const themes = {
+    modern: {
+      lightSquare: "bg-gray-100",
+      darkSquare: "bg-gray-800",
+      boardBorder: "border-gray-400",
+      selectedSquare: "bg-yellow-300",
+      validMove: "bg-green-300",
+    },
+    neon: {
+      lightSquare: "bg-purple-200",
+      darkSquare: "bg-purple-900",
+      boardBorder: "border-purple-500",
+      selectedSquare: "bg-cyan-400",
+      validMove: "bg-lime-400",
+    },
+    classic: {
+      lightSquare: "bg-amber-100",
+      darkSquare: "bg-amber-800",
+      boardBorder: "border-amber-600",
+      selectedSquare: "bg-yellow-400",
+      validMove: "bg-green-400",
+    },
+  };
+
+  return themes[theme || "classic"];
+};
+
+// Component Props
+interface SquareProps {
+  piece: Piece | null;
+  isLightSquare: boolean;
+  isSelected: boolean;
+  isValidMove: boolean;
+  themeStyles: ThemeStyles;
+  playerOneColor: string;
+  playerTwoColor: string;
+  canInteract: boolean;
+  onClick: () => void;
+}
+
+interface GameStatusProps {
+  winner: Player | null;
+  currentPlayer: Player;
+  playerOneColor: string;
+  playerTwoColor: string;
+  localPlayer: Player | null;
+}
+
+interface SidebarProps {
+  isConnected: boolean;
+  connectionStatus: string;
+  roomId: string;
+  players: MultiplayerState["players"];
+  spectators: string[];
+  localPlayer: Player | null;
+  isSpectator: boolean;
+  capturedPieces: Piece[];
+  playerOneColor: string;
+  playerTwoColor: string;
+  showMoveHistory: boolean;
+  moveHistory: string[];
+  boardTheme: string;
+}
+
+// Sub-components
+const Square: React.FC<SquareProps> = ({
+  piece,
+  isLightSquare,
+  isSelected,
+  isValidMove,
+  themeStyles,
+  playerOneColor,
+  playerTwoColor,
+  canInteract,
+  onClick,
+}) => (
   <div
-    className="absolute pointer-events-none user-cursor"
-    style={{
-      left: cursor.x,
-      top: cursor.y,
-      transform: "translate(-50%, -50%)",
-      zIndex: 10,
-    }}
+    className={`
+      w-12 h-12 flex items-center justify-center cursor-pointer relative
+      ${isLightSquare ? themeStyles.lightSquare : themeStyles.darkSquare}
+      ${isSelected ? themeStyles.selectedSquare : ""}
+      ${isValidMove ? themeStyles.validMove : ""}
+      hover:brightness-110 transition-all duration-200
+      ${!canInteract ? "cursor-not-allowed opacity-75" : ""}
+    `}
+    onClick={onClick}
   >
-    <div
-      className="w-3 h-3 rounded-full border-2 border-white"
-      style={{ backgroundColor: cursor.color }}
-    />
-    <div className="text-xs mt-1 px-1 bg-black text-white rounded whitespace-nowrap text-[10px]">
-      User {userId.slice(-4)}
+    {piece && (
+      <div
+        className={`
+          w-8 h-8 rounded-full border-2 border-white shadow-lg flex items-center justify-center
+          text-white font-bold text-xs transition-transform duration-200 hover:scale-110
+        `}
+        style={{
+          backgroundColor:
+            piece.player === "player1" ? playerOneColor : playerTwoColor,
+        }}
+      >
+        {piece.type === "king" && "♔"}
+      </div>
+    )}
+    {isValidMove && !piece && (
+      <div className="w-3 h-3 rounded-full bg-green-600 opacity-70" />
+    )}
+  </div>
+);
+
+const GameStatus: React.FC<GameStatusProps> = ({
+  winner,
+  currentPlayer,
+  playerOneColor,
+  playerTwoColor,
+  localPlayer,
+}) => (
+  <div className="mt-4 text-center">
+    {winner ? (
+      <div className="text-2xl font-bold text-green-600">
+        🎉 {PLAYER_LABELS[winner]} Wins! 🎉
+      </div>
+    ) : (
+      <div className="text-xl font-semibold">
+        Current Player:
+        <span
+          className="ml-2 px-3 py-1 rounded text-white"
+          style={{
+            backgroundColor:
+              currentPlayer === "player1" ? playerOneColor : playerTwoColor,
+          }}
+        >
+          {PLAYER_LABELS[currentPlayer]}
+        </span>
+        {localPlayer && (
+          <div className="text-sm mt-1 text-gray-600">
+            {currentPlayer === localPlayer ? "Your turn!" : "Opponent's turn"}
+          </div>
+        )}
+      </div>
+    )}
+  </div>
+);
+
+const CapturedPieces: React.FC<{
+  pieces: Piece[];
+  playerOneColor: string;
+  playerTwoColor: string;
+}> = ({ pieces, playerOneColor, playerTwoColor }) => (
+  <div className="bg-white rounded-lg shadow p-4">
+    <h3 className="text-lg font-semibold mb-3">Captured Pieces</h3>
+    <div className="space-y-2">
+      {(["player1", "player2"] as const).map((player) => (
+        <div key={player} className="flex flex-wrap gap-1">
+          <span className="text-sm font-medium">{PLAYER_LABELS[player]}:</span>
+          {pieces
+            .filter((piece) => piece.player === player)
+            .map((piece, index) => (
+              <div
+                key={`${piece.id}-captured-${index}`}
+                className="w-6 h-6 rounded-full border flex items-center justify-center text-xs text-white"
+                style={{
+                  backgroundColor:
+                    player === "player1" ? playerOneColor : playerTwoColor,
+                }}
+              >
+                {piece.type === "king" && "♔"}
+              </div>
+            ))}
+        </div>
+      ))}
     </div>
   </div>
-));
+);
 
-UserCursor.displayName = "UserCursor";
+const MoveHistory: React.FC<{ moves: string[] }> = ({ moves }) => (
+  <div className="bg-white rounded-lg shadow p-4">
+    <h3 className="text-lg font-semibold mb-3">Move History</h3>
+    <div className="max-h-60 overflow-y-auto space-y-1">
+      {moves.length === 0 ? (
+        <p className="text-gray-500 text-sm">No moves yet</p>
+      ) : (
+        moves.map((move, index) => (
+          <div key={index} className="text-sm p-2 bg-gray-50 rounded">
+            {index + 1}. {move}
+          </div>
+        ))
+      )}
+    </div>
+  </div>
+);
 
-// Optimized toolbar component
-const DrawingToolbar = memo<ToolbarProps>(
-  ({
-    currentTool,
-    setCurrentTool,
-    enableEraser,
-    currentColor,
-    setCurrentColor,
-    currentSize,
-    setCurrentSize,
-    clearCanvas,
+const Sidebar: React.FC<SidebarProps> = ({
+  isConnected,
+  connectionStatus,
+  roomId,
+  players,
+  spectators,
+  localPlayer,
+  isSpectator,
+  capturedPieces,
+  playerOneColor,
+  playerTwoColor,
+  showMoveHistory,
+  moveHistory,
+  boardTheme,
+}) => (
+  <div className="w-full lg:w-80 space-y-6">
+    <div className="bg-white rounded-lg shadow p-4">
+      <h3 className="text-lg font-semibold mb-3">Multiplayer Status</h3>
+      <div className="space-y-2 text-sm">
+        <div>
+          Room:{" "}
+          <code className="bg-gray-100 px-2 py-1 rounded text-xs">
+            {roomId}
+          </code>
+        </div>
+        <div>
+          Connection:{" "}
+          <span className={isConnected ? "text-green-600" : "text-red-600"}>
+            {connectionStatus}
+          </span>
+        </div>
+        <div>Player 1: {players.player1 ? "✅ Connected" : "❌ Waiting"}</div>
+        <div>Player 2: {players.player2 ? "✅ Connected" : "❌ Waiting"}</div>
+        {spectators.length > 0 && <div>Spectators: {spectators.length}</div>}
+        {localPlayer && (
+          <div className="mt-2 p-2 bg-blue-50 rounded">
+            You are{" "}
+            <strong>
+              {localPlayer === "player1" ? "Player 1" : "Player 2"}
+            </strong>
+          </div>
+        )}
+        {isSpectator && (
+          <div className="mt-2 p-2 bg-purple-50 rounded">
+            You are <strong>Spectating</strong>
+          </div>
+        )}
+      </div>
+    </div>
+
+    <CapturedPieces
+      pieces={capturedPieces}
+      playerOneColor={playerOneColor}
+      playerTwoColor={playerTwoColor}
+    />
+
+    {showMoveHistory && <MoveHistory moves={moveHistory} />}
+
+    <div className="bg-white rounded-lg shadow p-4">
+      <h3 className="text-lg font-semibold mb-3">Game Settings</h3>
+      <div className="space-y-2 text-sm">
+        <div>
+          Board Size: {BOARD_SIZE}×{BOARD_SIZE}
+        </div>
+        <div>Theme: {boardTheme}</div>
+        <div>Multiplayer: Enabled</div>
+        <div>Room: {roomId}</div>
+      </div>
+    </div>
+  </div>
+);
+// Main Component
+export const Block: React.FC<BlockProps> = ({
+  playerOneColor = "#dc2626",
+  playerTwoColor = "#1d4ed8",
+  boardTheme = "classic",
+  roomId = "checkers-default-room",
+  showMoveHistory = true,
+  onVisualSettingsChange,
+}) => {
+  // Local state
+  const [localSelectedPiece, setLocalSelectedPiece] = useState<Piece | null>(
+    null
+  );
+  const [localValidMoves, setLocalValidMoves] = useState<Move[]>([]);
+  const userId = getUserId();
+
+  // Ref to track previous prop values to detect actual changes
+  const prevPropsRef = useRef({
+    playerOneColor,
+    playerTwoColor,
+    boardTheme,
+  });
+
+  // Memoized initial state
+  const initialMultiplayerState = useMemo(
+    (): MultiplayerState => ({
+      gameState: {
+        board: initializeBoard(BOARD_SIZE),
+        currentPlayer: "player1",
+        selectedPiece: null,
+        validMoves: [],
+        capturedPieces: [],
+        winner: null,
+        moveHistory: [],
+      },
+      players: {},
+      spectators: [],
+      visualSettings: {
+        playerOneColor,
+        playerTwoColor,
+        boardTheme,
+      },
+    }),
+    [playerOneColor, playerTwoColor, boardTheme]
+  );
+
+  // Collaborative space hook
+  const {
+    state: multiplayerState,
+    update: updateMultiplayerState,
     isConnected,
-    strokeCount,
-    maxStrokes,
-    activeUsers,
-  }) => (
-    <div className="flex items-center gap-2 p-3 border-b toolbar bg-gray-50 border-gray-300">
-      {/* Tool Selection */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => setCurrentTool("brush")}
-          className={`toolbar-button px-3 py-1 rounded text-sm transition-all ${
-            currentTool === "brush"
-              ? "bg-blue-500 text-white"
-              : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-          }`}
-          aria-label="Select brush tool"
+    connectionStatus,
+  } = useCollabSpace(roomId, initialMultiplayerState, {
+    onConnect: () => console.log("Connected to multiplayer room:", roomId),
+    onDisconnect: () => console.log("Disconnected from multiplayer room"),
+    onError: (error) => console.error("Multiplayer error:", error),
+  });
+
+  // Derived state
+  const { gameState, players, spectators, visualSettings } = multiplayerState;
+  const localPlayer =
+    players.player1 === userId
+      ? "player1"
+      : players.player2 === userId
+      ? "player2"
+      : null;
+  const isSpectator = localPlayer === null;
+
+  // Use synchronized visual settings
+  const syncedPlayerOneColor = visualSettings?.playerOneColor || playerOneColor;
+  const syncedPlayerTwoColor = visualSettings?.playerTwoColor || playerTwoColor;
+  const syncedBoardTheme =
+    (visualSettings?.boardTheme as BlockProps["boardTheme"]) || boardTheme;
+  const themeStyles = useMemo(
+    () => getThemeStyles(syncedBoardTheme),
+    [syncedBoardTheme]
+  );
+
+  // Player assignment effect
+  useEffect(() => {
+    if (!isConnected) return;
+
+    if (!players.player1) {
+      updateMultiplayerState({ players: { ...players, player1: userId } });
+    } else if (!players.player2 && players.player1 !== userId) {
+      updateMultiplayerState({ players: { ...players, player2: userId } });
+    } else if (
+      players.player1 !== userId &&
+      players.player2 !== userId &&
+      !spectators.includes(userId)
+    ) {
+      updateMultiplayerState({ spectators: [...spectators, userId] });
+    }
+  }, [isConnected, players, spectators, userId, updateMultiplayerState]);
+
+  // Board validation effect - reset if board size doesn't match
+  useEffect(() => {
+    if (!isConnected || !gameState.board) return;
+
+    // Check if board size matches expected BOARD_SIZE
+    if (
+      gameState.board.length !== BOARD_SIZE ||
+      gameState.board[0]?.length !== BOARD_SIZE
+    ) {
+      console.log("Board size mismatch detected, resetting game...");
+      const newGameState: GameState = {
+        board: initializeBoard(BOARD_SIZE),
+        currentPlayer: "player1",
+        selectedPiece: null,
+        validMoves: [],
+        capturedPieces: [],
+        winner: null,
+        moveHistory: [],
+      };
+      updateMultiplayerState({ gameState: newGameState });
+    }
+  }, [isConnected, gameState.board, updateMultiplayerState]);
+
+  // Visual settings synchronization effect - only sync user-initiated changes
+  useEffect(() => {
+    if (!isConnected) return;
+
+    // Check if props have actually changed from previous values (user input)
+    const prevProps = prevPropsRef.current;
+    const propsChanged =
+      prevProps.playerOneColor !== playerOneColor ||
+      prevProps.playerTwoColor !== playerTwoColor ||
+      prevProps.boardTheme !== boardTheme;
+
+    if (propsChanged) {
+      console.log("User changed props, syncing to other players:", {
+        playerOneColor,
+        playerTwoColor,
+        boardTheme,
+      });
+
+      // Update multiplayer state (this will sync to other players)
+      updateMultiplayerState({
+        visualSettings: {
+          playerOneColor,
+          playerTwoColor,
+          boardTheme,
+        },
+      });
+
+      // Update the ref to prevent re-triggering
+      prevPropsRef.current = {
+        playerOneColor,
+        playerTwoColor,
+        boardTheme,
+      };
+    }
+  }, [
+    isConnected,
+    playerOneColor,
+    playerTwoColor,
+    boardTheme,
+    updateMultiplayerState,
+  ]);
+
+  // Notify parent when OTHER players change visual settings (not our own changes)
+  useEffect(() => {
+    if (!visualSettings || !onVisualSettingsChange) return;
+
+    // Only notify if the synced settings are different from our current props
+    // AND different from what we last sent (to avoid loops)
+    const settingsFromOthers =
+      visualSettings.playerOneColor !== playerOneColor ||
+      visualSettings.playerTwoColor !== playerTwoColor ||
+      visualSettings.boardTheme !== boardTheme;
+
+    if (settingsFromOthers) {
+      console.log(
+        "Received settings from other players, updating local props:",
+        visualSettings
+      );
+      onVisualSettingsChange({
+        playerOneColor: visualSettings.playerOneColor,
+        playerTwoColor: visualSettings.playerTwoColor,
+        boardTheme: visualSettings.boardTheme,
+      });
+
+      // Update our ref to match the new values to prevent loops
+      prevPropsRef.current = {
+        playerOneColor: visualSettings.playerOneColor,
+        playerTwoColor: visualSettings.playerTwoColor,
+        boardTheme:
+          (visualSettings.boardTheme as BlockProps["boardTheme"]) || "classic",
+      };
+    }
+  }, [visualSettings, onVisualSettingsChange]);
+
+  // Game state update function
+  const updateGameState = useCallback(
+    (newGameState: GameState) => {
+      updateMultiplayerState({ gameState: newGameState });
+    },
+    [updateMultiplayerState]
+  );
+
+  // Move execution logic
+  const executeMove = useCallback(
+    (piece: Piece, targetRow: number, targetCol: number, validMove: Move) => {
+      const newBoard = gameState.board.map((row) => [...row]);
+
+      // Remove piece from old position
+      newBoard[piece.row][piece.col] = null;
+
+      // Handle capture
+      let capturedPieces = [...gameState.capturedPieces];
+      if (validMove.isCapture && validMove.capturedPiece) {
+        const { row: capturedRow, col: capturedCol } = validMove.capturedPiece;
+        newBoard[capturedRow][capturedCol] = null;
+        capturedPieces.push(validMove.capturedPiece);
+      }
+
+      // Place piece in new position
+      const movedPiece: Piece = {
+        ...piece,
+        row: targetRow,
+        col: targetCol,
+        type: shouldBecomeKing(piece, BOARD_SIZE) ? "king" : piece.type,
+      };
+      newBoard[targetRow][targetCol] = movedPiece;
+
+      // Create new game state
+      const nextPlayer: Player =
+        gameState.currentPlayer === "player1" ? "player2" : "player1";
+      const moveDescription = createMoveDescription(
+        piece,
+        targetRow,
+        targetCol,
+        !!validMove.isCapture
+      );
+
+      return {
+        board: newBoard,
+        currentPlayer: nextPlayer,
+        selectedPiece: null,
+        validMoves: [],
+        capturedPieces,
+        winner: checkWinner(newBoard, nextPlayer),
+        moveHistory: [...gameState.moveHistory, moveDescription],
+      };
+    },
+    [gameState]
+  );
+
+  // Square click handler
+  const handleSquareClick = useCallback(
+    (row: number, col: number) => {
+      if (gameState.winner) return;
+
+      // Prevent interaction when not player's turn
+      if (gameState.currentPlayer !== localPlayer || isSpectator) return;
+
+      const clickedPiece = gameState.board[row][col];
+
+      if (localSelectedPiece) {
+        const validMove = localValidMoves.find(
+          (move) => move.row === row && move.col === col
+        );
+
+        if (validMove) {
+          const newGameState = executeMove(
+            localSelectedPiece,
+            row,
+            col,
+            validMove
+          );
+          setLocalSelectedPiece(null);
+          setLocalValidMoves([]);
+          updateGameState(newGameState);
+        } else if (clickedPiece?.player === gameState.currentPlayer) {
+          // Select different piece
+          const validMoves = getValidMoves(clickedPiece, gameState.board);
+          setLocalSelectedPiece(clickedPiece);
+          setLocalValidMoves(validMoves);
+        } else {
+          // Deselect
+          setLocalSelectedPiece(null);
+          setLocalValidMoves([]);
+        }
+      } else if (clickedPiece?.player === gameState.currentPlayer) {
+        // Select piece
+        const validMoves = getValidMoves(clickedPiece, gameState.board);
+        setLocalSelectedPiece(clickedPiece);
+        setLocalValidMoves(validMoves);
+      }
+    },
+    [
+      gameState,
+      localSelectedPiece,
+      localValidMoves,
+      localPlayer,
+      isSpectator,
+      executeMove,
+      updateGameState,
+    ]
+  );
+
+  // Reset game function
+  const resetGame = useCallback(() => {
+    const newGameState: GameState = {
+      board: initializeBoard(BOARD_SIZE),
+      currentPlayer: "player1",
+      selectedPiece: null,
+      validMoves: [],
+      capturedPieces: [],
+      winner: null,
+      moveHistory: [],
+    };
+
+    setLocalSelectedPiece(null);
+    setLocalValidMoves([]);
+    updateGameState(newGameState);
+  }, [updateGameState]);
+
+  const canInteract =
+    !gameState.winner &&
+    gameState.currentPlayer === localPlayer &&
+    !isSpectator;
+
+  return (
+    <div className="flex flex-col lg:flex-row gap-6 p-6 w-full h-full bg-gray-50 min-h-screen">
+      {/* Game Board */}
+      <div className="flex-1 flex flex-col items-center">
+        {/* Header */}
+        <div className="mb-4">
+          <h1 className="text-3xl font-bold text-gray-800 text-center">
+            Checkers Game
+          </h1>
+
+          {/* Multiplayer Status */}
+          <div className="text-center mt-2 space-y-1">
+            <p className="text-sm text-gray-600">
+              Connection:{" "}
+              <span
+                className={`font-medium ${
+                  isConnected ? "text-green-600" : "text-red-600"
+                }`}
+              >
+                {connectionStatus}
+              </span>
+            </p>
+            {isConnected && (
+              <>
+                {localPlayer && (
+                  <p className="text-sm text-blue-600">
+                    You are{" "}
+                    <strong>
+                      {localPlayer === "player1"
+                        ? "Player 1 (Red)"
+                        : "Player 2 (Blue)"}
+                    </strong>
+                  </p>
+                )}
+                {isSpectator && (
+                  <p className="text-sm text-purple-600">
+                    You are <strong>Spectating</strong>
+                  </p>
+                )}
+                <p className="text-xs text-gray-500">
+                  Players: {players.player1 ? "1" : "0"}/2 connected
+                  {spectators.length > 0 &&
+                    ` • ${spectators.length} spectator(s)`}
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Board */}
+        <div
+          className={`grid gap-0 border-4 ${themeStyles.boardBorder} shadow-lg`}
+          style={{
+            gridTemplateColumns: `repeat(${BOARD_SIZE}, minmax(0, 1fr))`,
+          }}
         >
-          🖌️ Brush
+          {gameState.board.map((row, rowIndex) =>
+            row.map((piece, colIndex) => {
+              const isLightSquare = (rowIndex + colIndex) % 2 === 0;
+              const isSelected =
+                localSelectedPiece?.row === rowIndex &&
+                localSelectedPiece?.col === colIndex;
+              const isValidMove = localValidMoves.some(
+                (move) => move.row === rowIndex && move.col === colIndex
+              );
+
+              return (
+                <Square
+                  key={`${rowIndex}-${colIndex}`}
+                  piece={piece}
+                  isLightSquare={isLightSquare}
+                  isSelected={isSelected}
+                  isValidMove={isValidMove}
+                  themeStyles={themeStyles}
+                  playerOneColor={syncedPlayerOneColor}
+                  playerTwoColor={syncedPlayerTwoColor}
+                  canInteract={canInteract}
+                  onClick={() => handleSquareClick(rowIndex, colIndex)}
+                />
+              );
+            })
+          )}
+        </div>
+
+        {/* Game Status */}
+        <GameStatus
+          winner={gameState.winner}
+          currentPlayer={gameState.currentPlayer}
+          playerOneColor={syncedPlayerOneColor}
+          playerTwoColor={syncedPlayerTwoColor}
+          localPlayer={localPlayer}
+        />
+
+        {/* Reset Button */}
+        <button
+          onClick={resetGame}
+          disabled={!localPlayer}
+          className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+        >
+          New Game
         </button>
-        {enableEraser && (
-          <button
-            onClick={() => setCurrentTool("eraser")}
-            className={`toolbar-button px-3 py-1 rounded text-sm transition-all ${
-              currentTool === "eraser"
-                ? "bg-red-500 text-white"
-                : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-            }`}
-            aria-label="Select eraser tool"
-          >
-            🧹 Eraser
-          </button>
+
+        {/* Waiting for player message */}
+        {!players.player2 && (
+          <div className="mt-4 p-4 bg-yellow-100 border border-yellow-300 rounded-lg text-center">
+            <p className="text-yellow-800 font-medium">
+              Waiting for second player...
+            </p>
+            <p className="text-yellow-600 text-sm mt-1">
+              Share this room ID:{" "}
+              <code className="bg-yellow-200 px-2 py-1 rounded">{roomId}</code>
+            </p>
+          </div>
         )}
       </div>
 
-      {/* Color Palette */}
-      {currentTool === "brush" && (
-        <div
-          className="flex items-center gap-1 ml-4"
-          role="group"
-          aria-label="Color palette"
-        >
-          {BRUSH_COLORS.map((color) => (
-            <button
-              key={color}
-              onClick={() => setCurrentColor(color)}
-              className={`color-button w-6 h-6 rounded border-2 transition-all ${
-                currentColor === color
-                  ? "border-gray-800 scale-110"
-                  : "border-gray-400"
-              }`}
-              style={{ backgroundColor: color }}
-              aria-label={`Select ${color} color`}
-              title={color}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Brush Size Control */}
-      <div className="flex items-center gap-2 ml-4">
-        <label htmlFor="brush-size" className="text-sm">
-          Size:
-        </label>
-        <input
-          id="brush-size"
-          type="range"
-          min="1"
-          max="20"
-          value={currentSize}
-          onChange={(e) => setCurrentSize(Number(e.target.value))}
-          className="w-20"
-          aria-label="Brush size"
-        />
-        <span className="text-sm w-6 text-center">{currentSize}</span>
-      </div>
-
-      {/* Actions */}
-      <button
-        onClick={clearCanvas}
-        className="toolbar-button px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600 ml-auto transition-all"
-        aria-label="Clear canvas"
-      >
-        🗑️ Clear
-      </button>
-
-      {/* Status Indicators */}
-      <div
-        className="flex items-center gap-2"
-        role="status"
-        aria-label="Connection status"
-      >
-        <div
-          className={`w-2 h-2 rounded-full connection-indicator ${
-            isConnected ? "bg-green-500" : "bg-red-500"
-          }`}
-          aria-hidden="true"
-        />
-        <span className="text-xs">
-          {isConnected ? "Connected" : "Disconnected"}
-        </span>
-      </div>
-    </div>
-  )
-);
-
-DrawingToolbar.displayName = "DrawingToolbar";
-
-// ===== Main Component =====
-export const Block: React.FC<BlockProps> = ({
-  canvasWidth = 800,
-  canvasHeight = 600,
-  brushSize = 3,
-  brushColor = "#000000",
-  backgroundColor = "#ffffff",
-  enableEraser = true,
-  maxStrokes = 1000,
-  showCursors = true,
-  documentId = "default-canvas",
-}) => {
-  // ===== Refs =====
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const offscreenCanvasRef = useRef<OffscreenCanvas | null>(null);
-  const offscreenContextRef = useRef<OffscreenCanvasRenderingContext2D | null>(
-    null
-  );
-  const animationFrameRef = useRef<number | null>(null);
-  const lastRenderTime = useRef<number>(0);
-  const isDirty = useRef<boolean>(false);
-  const lastCursorUpdate = useRef<number>(0);
-  const strokeBatchRef = useRef<DrawingStroke[]>([]);
-  const batchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const renderScheduled = useRef<boolean>(false);
-
-  // ===== State =====
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [currentTool, setCurrentTool] = useState<"brush" | "eraser">("brush");
-  const [currentColor, setCurrentColor] = useState(brushColor);
-  const [currentSize, setCurrentSize] = useState(brushSize);
-  const [currentStroke, setCurrentStroke] = useState<DrawingStroke | null>(
-    null
-  );
-  const [mousePosition, setMousePosition] = useState<Point | null>(null);
-  const [isHovering, setIsHovering] = useState(false);
-
-  // ===== Collaborative State =====
-  const { state, update, userId, isConnected, connectionStatus } =
-    useCollabSpace<CollaborativeState>(`drawing:${documentId}`, {
-      strokes: [],
-      cursors: {},
-    });
-
-  // Debug log to track state changes
-  useEffect(() => {
-    console.log("Canvas state updated:", {
-      strokeCount: state.strokes.length,
-      cursorCount: Object.keys(state.cursors).length,
-      userIds: Object.keys(state.cursors),
-      currentUserId: userId,
-    });
-  }, [state.strokes.length, Object.keys(state.cursors).length, userId]);
-
-  // ===== Memoized Values =====
-  const activeCursors = useMemo(() => {
-    const now = Date.now();
-    return Object.entries(state.cursors).filter(
-      ([id, cursor]) =>
-        id !== userId &&
-        now - cursor.timestamp < RENDERING_CONFIG.CURSOR_TIMEOUT_MS
-    );
-  }, [state.cursors, userId]);
-
-  const strokeCount = useMemo(
-    () => state.strokes.length,
-    [state.strokes] // Changed from [state.strokes.length] to [state.strokes] for better stability
-  );
-
-  const activeUsers = useMemo(
-    () => Object.keys(state.cursors).length,
-    [state.cursors]
-  );
-
-  // Memoize strokes separately to prevent resets
-  const memoizedStrokes = useMemo(() => state.strokes, [state.strokes]);
-
-  // ===== Rendering Functions =====
-  const renderStroke = useCallback(
-    (ctx: CanvasRenderingContext2D, stroke: DrawingStroke) => {
-      if (stroke.points.length < 2) return;
-
-      const path = new Path2D();
-      path.moveTo(stroke.points[0].x, stroke.points[0].y);
-
-      // Use quadratic curves for smoother lines
-      if (stroke.points.length >= 3) {
-        for (let i = 1; i < stroke.points.length - 1; i++) {
-          const currentPoint = stroke.points[i];
-          const nextPoint = stroke.points[i + 1];
-          const controlX = (currentPoint.x + nextPoint.x) / 2;
-          const controlY = (currentPoint.y + nextPoint.y) / 2;
-          path.quadraticCurveTo(
-            currentPoint.x,
-            currentPoint.y,
-            controlX,
-            controlY
-          );
-        }
-        const lastPoint = stroke.points[stroke.points.length - 1];
-        path.lineTo(lastPoint.x, lastPoint.y);
-      } else {
-        for (let i = 1; i < stroke.points.length; i++) {
-          path.lineTo(stroke.points[i].x, stroke.points[i].y);
-        }
-      }
-
-      ctx.stroke(path);
-    },
-    []
-  );
-
-  const scheduleRender = useCallback(() => {
-    if (renderScheduled.current) return;
-    renderScheduled.current = true;
-
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-    }
-
-    animationFrameRef.current = requestAnimationFrame(() => {
-      renderScheduled.current = false;
-      const now = performance.now();
-
-      // Throttle rendering to target FPS
-      if (now - lastRenderTime.current < RENDERING_CONFIG.FRAME_TIME_MS) return;
-      lastRenderTime.current = now;
-
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext("2d");
-      if (!canvas || !ctx) return;
-
-      // Clear and redraw background
-      ctx.fillStyle = backgroundColor;
-      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-      // Use memoized strokes to prevent resets
-      if (memoizedStrokes.length === 0) return;
-
-      // Batch render all strokes
-      ctx.save();
-
-      // Group strokes by color and size for better performance
-      const strokeGroups = new Map<string, DrawingStroke[]>();
-
-      memoizedStrokes.forEach((stroke) => {
-        if (stroke.points.length < 2) return;
-        const key = `${stroke.color}-${stroke.size}`;
-        const group = strokeGroups.get(key) || [];
-        group.push(stroke);
-        strokeGroups.set(key, group);
-      });
-
-      // Render each group efficiently
-      strokeGroups.forEach((strokes, key) => {
-        const [color, size] = key.split("-");
-
-        // Set composite operation for eraser strokes
-        ctx.globalCompositeOperation =
-          color === backgroundColor ? "destination-out" : "source-over";
-        ctx.strokeStyle = color;
-        ctx.lineWidth = Number(size);
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-
-        strokes.forEach((stroke) => renderStroke(ctx, stroke));
-      });
-
-      ctx.globalCompositeOperation = "source-over";
-      ctx.restore();
-      isDirty.current = false;
-    });
-  }, [
-    memoizedStrokes,
-    canvasWidth,
-    canvasHeight,
-    backgroundColor,
-    renderStroke,
-  ]);
-
-  // ===== Effects =====
-  // Cleanup batch timeout and animation frames on unmount
-  useEffect(() => {
-    return () => {
-      if (batchTimeoutRef.current) {
-        clearTimeout(batchTimeoutRef.current);
-      }
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, []);
-
-  // Initialize canvas background
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
-
-    // Initialize offscreen canvas for better performance
-    if (typeof OffscreenCanvas !== "undefined") {
-      offscreenCanvasRef.current = new OffscreenCanvas(
-        canvasWidth,
-        canvasHeight
-      );
-      offscreenContextRef.current = offscreenCanvasRef.current.getContext("2d");
-    }
-
-    ctx.fillStyle = backgroundColor;
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-    // Set canvas optimization settings
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-  }, [canvasWidth, canvasHeight, backgroundColor]);
-
-  // Trigger re-render when strokes change (using memoized strokes to prevent resets)
-  useEffect(() => {
-    isDirty.current = true;
-    scheduleRender();
-  }, [memoizedStrokes, scheduleRender]);
-
-  // ===== Event Handlers =====
-  const getEventPosition = useCallback(
-    (e: React.MouseEvent | React.TouchEvent): Point => {
-      const canvas = canvasRef.current;
-      if (!canvas) return { x: 0, y: 0 };
-
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-
-      if ("touches" in e && e.touches.length > 0) {
-        return {
-          x: (e.touches[0].clientX - rect.left) * scaleX,
-          y: (e.touches[0].clientY - rect.top) * scaleY,
-        };
-      } else if ("clientX" in e) {
-        return {
-          x: (e.clientX - rect.left) * scaleX,
-          y: (e.clientY - rect.top) * scaleY,
-        };
-      }
-      return { x: 0, y: 0 };
-    },
-    []
-  );
-
-  const startDrawing = useCallback(
-    (e: React.MouseEvent | React.TouchEvent) => {
-      e.preventDefault();
-      const pos = getEventPosition(e);
-      setIsDrawing(true);
-
-      const strokeId = generateStrokeId(userId);
-      const newStroke: DrawingStroke = {
-        id: strokeId,
-        userId: userId,
-        points: [pos],
-        color: currentTool === "eraser" ? backgroundColor : currentColor,
-        size: currentTool === "eraser" ? currentSize * 2 : currentSize,
-        timestamp: Date.now(),
-      };
-
-      setCurrentStroke(newStroke);
-    },
-    [
-      getEventPosition,
-      userId,
-      currentColor,
-      currentSize,
-      currentTool,
-      backgroundColor,
-    ]
-  );
-
-  const draw = useCallback(
-    (e: React.MouseEvent | React.TouchEvent) => {
-      if (!isDrawing || !currentStroke) return;
-      e.preventDefault();
-
-      const pos = getEventPosition(e);
-      const lastPoint = currentStroke.points[currentStroke.points.length - 1];
-
-      // Dynamic distance threshold based on brush size for performance
-      const minDistance = getMinDrawDistance(currentSize);
-      const distance = calculateDistance(lastPoint, pos);
-
-      if (distance < minDistance) return;
-
-      const updatedStroke = {
-        ...currentStroke,
-        points: [...currentStroke.points, pos],
-      };
-
-      setCurrentStroke(updatedStroke);
-
-      // Immediate local feedback with optimized rendering
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext("2d");
-      if (canvas && ctx && lastPoint) {
-        ctx.save();
-        ctx.globalCompositeOperation =
-          currentTool === "eraser" ? "destination-out" : "source-over";
-        ctx.strokeStyle = updatedStroke.color;
-        ctx.lineWidth = updatedStroke.size;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-
-        ctx.beginPath();
-        ctx.moveTo(lastPoint.x, lastPoint.y);
-        ctx.lineTo(pos.x, pos.y);
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      // Throttled cursor updates with better state management
-      const now = Date.now();
-      const timeSinceLastUpdate = now - lastCursorUpdate.current;
-      const updateInterval = isDrawing
-        ? RENDERING_CONFIG.CURSOR_UPDATE_INTERVAL_DRAWING
-        : RENDERING_CONFIG.CURSOR_UPDATE_INTERVAL_IDLE;
-
-      if (timeSinceLastUpdate > updateInterval) {
-        lastCursorUpdate.current = now;
-        // Use callback to avoid stale state references
-        update((prev) => {
-          // Don't update if cursor position hasn't changed significantly
-          const existingCursor = prev.cursors[userId];
-          if (
-            existingCursor &&
-            Math.abs(existingCursor.x - pos.x) < 2 &&
-            Math.abs(existingCursor.y - pos.y) < 2
-          ) {
-            return prev; // Return same state to prevent unnecessary updates
-          }
-
-          return {
-            ...prev,
-            cursors: {
-              ...prev.cursors,
-              [userId]: {
-                userId,
-                x: pos.x,
-                y: pos.y,
-                color: currentColor,
-                timestamp: now,
-              },
-            },
-          };
-        });
-      }
-    },
-    [
-      isDrawing,
-      currentStroke,
-      getEventPosition,
-      userId,
-      currentColor,
-      currentTool,
-      currentSize,
-      update,
-    ]
-  );
-
-  const stopDrawing = useCallback(() => {
-    if (!isDrawing || !currentStroke) return;
-
-    setIsDrawing(false);
-
-    // Only add stroke if it has meaningful content
-    if (currentStroke.points.length < 2) {
-      setCurrentStroke(null);
-      return;
-    }
-
-    const finalStroke = { ...currentStroke };
-
-    // Clear any pending batch operations
-    if (batchTimeoutRef.current) {
-      clearTimeout(batchTimeoutRef.current);
-      batchTimeoutRef.current = null;
-    }
-
-    // Efficient stroke update with optimization for large stroke counts
-    update((prev) => {
-      let newStrokes = [...prev.strokes, finalStroke];
-
-      // Implement efficient stroke pruning when approaching limit
-      if (newStrokes.length > maxStrokes) {
-        const pruneCount = Math.floor(
-          maxStrokes * RENDERING_CONFIG.STROKE_PRUNING_PERCENTAGE
-        );
-        newStrokes = newStrokes.slice(pruneCount);
-      }
-
-      return {
-        ...prev,
-        strokes: newStrokes,
-      };
-    });
-
-    setCurrentStroke(null);
-  }, [isDrawing, currentStroke, update, maxStrokes]);
-
-  const clearCanvas = useCallback(() => {
-    update((prev) => ({
-      ...prev,
-      strokes: [],
-    }));
-  }, [update]);
-
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent) => {
-      const pos = getEventPosition(e);
-      setMousePosition(pos);
-
-      if (isDrawing) {
-        draw(e);
-      } else {
-        // Throttle cursor updates for non-drawing movement with better state management
-        const now = Date.now();
-        if (
-          now - lastCursorUpdate.current >
-          RENDERING_CONFIG.CURSOR_UPDATE_INTERVAL_IDLE
-        ) {
-          lastCursorUpdate.current = now;
-          update((prev) => {
-            // Don't update if cursor position hasn't changed significantly
-            const existingCursor = prev.cursors[userId];
-            if (
-              existingCursor &&
-              Math.abs(existingCursor.x - pos.x) < 5 &&
-              Math.abs(existingCursor.y - pos.y) < 5
-            ) {
-              return prev; // Return same state to prevent unnecessary updates
-            }
-
-            return {
-              ...prev,
-              cursors: {
-                ...prev.cursors,
-                [userId]: {
-                  userId,
-                  x: pos.x,
-                  y: pos.y,
-                  color: currentColor,
-                  timestamp: now,
-                },
-              },
-            };
-          });
-        }
-      }
-    },
-    [isDrawing, getEventPosition, userId, currentColor, update, draw]
-  );
-
-  const handleMouseEnter = useCallback(() => {
-    setIsHovering(true);
-  }, []);
-
-  const handleMouseLeave = useCallback(() => {
-    setIsHovering(false);
-    setMousePosition(null);
-    if (isDrawing) {
-      stopDrawing();
-    }
-  }, [isDrawing, stopDrawing]);
-
-  // Touch event handlers with proper prevention of default behavior
-  const handleTouchStart = useCallback(
-    (e: React.TouchEvent) => {
-      e.preventDefault();
-      startDrawing(e);
-    },
-    [startDrawing]
-  );
-
-  const handleTouchMove = useCallback(
-    (e: React.TouchEvent) => {
-      e.preventDefault();
-      draw(e);
-    },
-    [draw]
-  );
-
-  const handleTouchEnd = useCallback(
-    (e: React.TouchEvent) => {
-      e.preventDefault();
-      stopDrawing();
-    },
-    [stopDrawing]
-  );
-
-  return (
-    <div
-      className="w-full h-full flex flex-col"
-      style={{
-        backgroundColor: "#ffffff",
-        color: "#1f2937",
-      }}
-    >
-      {/* Optimized Toolbar Component */}
-      <DrawingToolbar
-        currentTool={currentTool}
-        setCurrentTool={setCurrentTool}
-        enableEraser={enableEraser}
-        currentColor={currentColor}
-        setCurrentColor={setCurrentColor}
-        currentSize={currentSize}
-        setCurrentSize={setCurrentSize}
-        clearCanvas={clearCanvas}
+      {/* Sidebar */}
+      <Sidebar
         isConnected={isConnected}
-        strokeCount={strokeCount}
-        maxStrokes={maxStrokes}
-        activeUsers={activeUsers}
+        connectionStatus={connectionStatus}
+        roomId={roomId}
+        players={players}
+        spectators={spectators}
+        localPlayer={localPlayer}
+        isSpectator={isSpectator}
+        capturedPieces={gameState.capturedPieces}
+        playerOneColor={syncedPlayerOneColor}
+        playerTwoColor={syncedPlayerTwoColor}
+        showMoveHistory={showMoveHistory}
+        moveHistory={gameState.moveHistory}
+        boardTheme={syncedBoardTheme}
       />
-
-      {/* Canvas Container */}
-      <div className="flex-1 relative overflow-hidden canvas-container">
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div
-            className="relative"
-            style={{ width: canvasWidth, height: canvasHeight }}
-          >
-            <canvas
-              ref={canvasRef}
-              width={canvasWidth}
-              height={canvasHeight}
-              className="drawing-canvas border border-gray-300"
-              style={{
-                maxWidth: "100%",
-                maxHeight: "100%",
-                objectFit: "contain",
-                borderColor: "#d1d5db",
-                cursor: currentTool === "eraser" ? "none" : "crosshair",
-              }}
-              onMouseDown={startDrawing}
-              onMouseMove={handleMouseMove}
-              onMouseUp={stopDrawing}
-              onMouseEnter={handleMouseEnter}
-              onMouseLeave={handleMouseLeave}
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-            />
-
-            {/* Tool Preview Components */}
-            {currentTool === "eraser" && isHovering && mousePosition && (
-              <div
-                className="absolute tool-preview border-2 border-red-500 rounded-full"
-                style={{
-                  left: mousePosition.x - (currentSize * 2) / 2,
-                  top: mousePosition.y - (currentSize * 2) / 2,
-                  width: currentSize * 2,
-                  height: currentSize * 2,
-                  backgroundColor: "rgba(255, 0, 0, 0.1)",
-                  zIndex: 5,
-                  pointerEvents: "none",
-                }}
-              />
-            )}
-
-            {currentTool === "brush" &&
-              isHovering &&
-              mousePosition &&
-              !isDrawing && (
-                <div
-                  className="absolute tool-preview border-2 rounded-full"
-                  style={{
-                    left: mousePosition.x - currentSize / 2,
-                    top: mousePosition.y - currentSize / 2,
-                    width: currentSize,
-                    height: currentSize,
-                    borderColor: currentColor,
-                    backgroundColor: `${currentColor}20`,
-                    zIndex: 5,
-                    pointerEvents: "none",
-                  }}
-                />
-              )}
-
-            {/* Optimized User Cursors */}
-            {showCursors &&
-              activeCursors.map(([id, cursor]) => (
-                <UserCursor key={id} cursor={cursor} userId={id} />
-              ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Stats Footer */}
-      <div
-        className="p-2 border-t text-xs flex justify-between"
-        style={{
-          backgroundColor: "#f3f4f6",
-          borderColor: "#d1d5db",
-        }}
-      >
-        <span>
-          Strokes: {strokeCount}/{maxStrokes}
-        </span>
-        <span>Active Users: {activeUsers}</span>
-        <span>
-          {isConnected ? "🟢" : "🔴"} {connectionStatus || "Unknown"}
-        </span>
-      </div>
     </div>
   );
 };

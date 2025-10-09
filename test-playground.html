@@ -215,15 +215,11 @@
                     Props Editor (JSON)
                 </h3>
                 <textarea id="props-editor" spellcheck="false">{
-  "canvasWidth": 600,
-  "canvasHeight": 400,
-  "brushSize": 3,
-  "brushColor": "#000000",
-  "backgroundColor": "#ffffff",
-  "enableEraser": true,
-  "maxStrokes": 500,
-  "showCursors": true,
-  "documentId": "demo-canvas"
+  "playerOneColor": "#dc2626",
+  "playerTwoColor": "#1d4ed8",
+  "boardTheme": "classic",
+  "roomId": "checkers-room-1",
+  "showMoveHistory": true
 }</textarea>
                 <div class="button-group">
                     <button class="button" id="apply-props" onclick="applyProps()">
@@ -251,15 +247,11 @@
     <script>
         let currentMountAPI = null;
         const defaultProps = {
-            canvasWidth: 600,
-            canvasHeight: 400,
-            brushSize: 3,
-            brushColor: "#000000",
-            backgroundColor: "#ffffff",
-            enableEraser: true,
-            maxStrokes: 500,
-            showCursors: true,
-            documentId: "demo-canvas"
+            playerOneColor: "#dc2626",
+            playerTwoColor: "#1d4ed8",
+            boardTheme: "classic",
+            roomId: "checkers-room-1",
+            showMoveHistory: true
         };
 
         // Load the module federation remote
@@ -297,9 +289,33 @@
                         // Use the mount function from the module
                         if (Module.mount) {
                             currentMountAPI = Module.mount(container, defaultProps);
+
+                            // Listen for prop changes from the component
+                            if (currentMountAPI.onPropsChange) {
+                                console.log('Playground: Registering onPropsChange listener');
+                                currentMountAPI.onPropsChange((newProps) => {
+                                    console.log('Playground: Props changed from component:', newProps);
+                                    updatePropsEditor(newProps);
+                                });
+                            } else {
+                                console.log('Playground: onPropsChange method not available');
+                            }
+
                             showSuccess('Module loaded successfully!');
                         } else if (Module.default && Module.default.mount) {
                             currentMountAPI = Module.default.mount(container, defaultProps);
+
+                            // Listen for prop changes from the component
+                            if (currentMountAPI.onPropsChange) {
+                                console.log('Playground: Registering onPropsChange listener (default)');
+                                currentMountAPI.onPropsChange((newProps) => {
+                                    console.log('Playground: Props changed from component (default):', newProps);
+                                    updatePropsEditor(newProps);
+                                });
+                            } else {
+                                console.log('Playground: onPropsChange method not available (default)');
+                            }
+
                             showSuccess('Module loaded successfully!');
                         } else if (Module.default) {
                             showError('Module loaded but no mount function found. Check App.tsx exports.');
@@ -336,6 +352,17 @@
                 }
             } catch (error) {
                 showError(`JSON Error: ${error.message}`);
+            }
+        }
+
+        function updatePropsEditor(newProps) {
+            console.log('Playground: updatePropsEditor called with:', newProps);
+            const editor = document.getElementById('props-editor');
+            if (editor) {
+                editor.value = JSON.stringify(newProps, null, 2);
+                console.log('Playground: Props editor textarea updated');
+            } else {
+                console.log('Playground: Props editor textarea not found');
             }
         }
 
