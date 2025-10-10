@@ -22,6 +22,7 @@ Create an engaging, interactive experience that can be **customized through prop
 - Quiz/QCM formats
 - Crossword puzzles
 - Any basic question-answer systems
+- ANY BLOCK ALREADY ON [Mexty's marketplace](https://workspace.mexty.ai/marketplace)
 
 ### Ideas to Inspire You
 
@@ -243,3 +244,4 @@ This test is designed to take **2-4 hours**. Focus on:
 **Quality over quantity!** A well-executed simple experience is better than a complex but buggy one.
 
 Good luck and have fun! 🚀
+
